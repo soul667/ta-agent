@@ -10,194 +10,14 @@ import os
 from openai import OpenAI
 from datetime import datetime
 
-
-T = TypeVar('T', bound='BaseCsvRow')
+API_KEY = "your_api_key_here"
 T1 = TypeVar('T', bound='BaseTxtRecord')
-@dataclass
-class BaseCsvRow:
-    """
-    一个可扩展的基类，用于表示 CSV 文件中的一行 (V2)。
-    
-    支持两种加载模式：
-    1. 自动匹配：(默认) 匹配 CSV 列标题 和 dataclass 字段名。
-    2. 顺序映射：(当提供 keys_list 时) 
-       将 keys_list 中的列名按顺序映射到 dataclass 的字段。
-    """
-    keys_list: ClassVar[Optional[List[str]]] = None
-    def to_dict(self) -> Dict[str, Any]:
-        """将此数据类实例转换为字典。"""
-        return asdict(self)
 
-    @classmethod
-    def _coerce_value(cls, value_str: str, field_type: Type) -> Any:
-        """
-        内部辅助方法，用于将 CSV 中的字符串值强制转换为
-        dataclass 字段声明的类型。
-        """
-        if value_str is None or value_str == '':
-            return None
-        
-        try:
-            if field_type is bool:
-                return value_str.lower() in ('true', '1', 't', 'y', 'yes')
-            # 检查是否为 Optional[T] 类型 (例如 Optional[int])
-            # 注意：这是一个简化的检查，在 Python 3.10+ (Union |) 中更复杂
-            if hasattr(field_type, '__origin__') and field_type.__origin__ is list:
-                # 简单处理，假设是逗号分隔的列表
-                return [item.strip() for item in value_str.split(',')]
-                
-            return field_type(value_str)
-        except (ValueError, TypeError):
-            print(f"警告: 无法将 '{value_str}' 转换为 {field_type}。返回 None。")
-            return None
-        except Exception as e:
-            print(f"警告: 类型转换时出错: {e}。返回原始字符串。")
-            return value_str
-
-    @classmethod
-    def load_from_csv(
-                      cls: Type[T], 
-                      filepath: str, 
-                    #   keys_list: Optional[List[str]] = None, 
-                      encoding: str = 'utf-8') -> List[T]:
-        """
-        从 CSV 文件加载数据行。
-        
-        :param filepath: CSV 文件的路径。
-        :param keys_list: (可选) 要读取的 CSV 列标题列表。
-                        如果提供，它将按顺序映射到 dataclass 字段。
-                        如果为 None (默认)，则自动按名称匹配列标题和字段。
-        :param encoding: 文件编码 (默认为 'utf-8')。
-        :return: 一个由子类实例组成的列表。
-        """
-        keys_list = cls.keys_list
-        instances = []
-        
-        # 获取 dataclass 的字段定义和类型
-        dc_fields = fields(cls)
-        field_type_map = get_type_hints(cls)
-
-        with open(filepath, mode='r', encoding=encoding) as f:
-            reader = csv.DictReader(f)
-            
-            # --- 新逻辑：根据是否提供了 keys_list 来决定模式 ---
-            
-            if keys_list is None:
-                # 模式 1: 自动匹配 (与之前相同)
-                dc_field_names_set = {f.name for f in dc_fields}
-                for row in reader:
-                    kwargs = {}
-                    for field_name in dc_field_names_set:
-                        if field_name in row:
-                            value_str = row[field_name]
-                            field_type = field_type_map[field_name]
-                            kwargs[field_name] = cls._coerce_value(value_str, field_type)
-                    
-                    try:
-                        instances.append(cls(**kwargs))
-                    except TypeError as e:
-                        print(f"警告 (自动模式): 无法实例化行 {row}。错误: {e}")
-            
-            else:
-                # 模式 2: 顺序映射
-                if not keys_list:
-                    raise ValueError("keys_list 已提供，但列表为空。")
-                
-                # 按顺序获取 dataclass 字段的名称
-                dc_field_names_ordered = [f.name for f in dc_fields]
-                
-                if len(keys_list) > len(dc_field_names_ordered):
-                    raise ValueError(
-                        f"keys_list 包含 {len(keys_list)} 个键, "
-                        f"但 {cls.__name__} 只有 {len(dc_field_names_ordered)} 个字段。"
-                    )
-                
-                # 创建从 "CSV列名" -> "dataclass字段名" 的映射
-                # e.g., {"Username": "student_id", "First Name": "first_name"}
-                mapping = dict(zip(keys_list, dc_field_names_ordered[:len(keys_list)]))
-                
-                for row in reader:
-                    kwargs = {}
-                    for csv_key, dc_field_name in mapping.items():
-                        if csv_key not in row:
-                            print(f"警告: 在CSV文件中未找到指定的键: '{csv_key}'")
-                            continue
-                        
-                        value_str = row[csv_key]
-                        field_type = field_type_map[dc_field_name]
-                        kwargs[dc_field_name] = cls._coerce_value(value_str, field_type)
-                    
-                    try:
-                        # 即使 kwargs 只包含部分字段 (例如 keys_list 较短)，
-                        # 只要 dataclass 中剩余的字段有默认值，这也会成功。
-                        instances.append(cls(**kwargs))
-                    except TypeError as e:
-                        print(f"警告 (映射模式): 无法实例化行 {row}。错误: {e}")
-
-        return instances
-
-    @classmethod
-    def load_from_csv_as_dict(
-                              cls: Type[T], 
-                              filepath: str, 
-                              key_field: str, 
-                            #   keys_list: Optional[List[str]] = None, 
-                              encoding: str = 'utf-8') -> Dict[str, T]:
-        """
-        从 CSV 文件加载数据，并返回一个以指定字段为键的字典。
-        
-        :param filepath: CSV 文件的路径。
-        :param key_field: 用作字典键的 *dataclass 字段名* (例如 'id' 或 'student_id')。
-        :param keys_list: (可选) 传递给 load_from_csv 的键列表。
-        :param encoding: 文件编码 (默认为 'utf-8')。
-        :return: 一个以 key_field 的值为键，子类实例为值的字典。
-        """
-        # 检查 key_field 是否是此类的一个有效字段
-        field_names = {f.name for f in fields(cls)}
-        if key_field not in field_names:
-            raise ValueError(f"'{key_field}' 不是 {cls.__name__} 的有效字段。有效字段为: {field_names}")
-
-        # 重用列表加载逻辑
-        instances_list = cls.load_from_csv(filepath, encoding=encoding)
-        
-        instance_map = {}
-        for instance in instances_list:
-            key_value = getattr(instance, key_field)
-            
-            if key_value is None:
-                print(f"警告: 实例 {instance} 的键字段 '{key_field}' 为 None，跳过索引。")
-                continue
-
-            key_str = str(key_value)
-            
-            if key_str in instance_map:
-                print(f"警告: 发现重复键 '{key_str}'。后来的行将覆盖前面的行。")
-            
-            instance_map[key_str] = instance
-            
-        return instance_map
-    
 @dataclass
 class Student:
     student_id: str
     student_name: str
     student_grade: int|str
-
-@dataclass
-class GradeList(BaseCsvRow):
-    """
-    代表一个产品。字段名必须匹配 CSV 列标题。
-    类型提示 (int, str, float, bool) 将用于自动类型转换。
-    """
-    Username: int
-    FirstName: str
-    Score: str
-    
-    keys_list: ClassVar[List[str]] = [
-        "Username",
-        "First Name",
-        "PA #6 Submission [Total Pts: 100 Score] |403340"
-    ]
 
 @dataclass
 class BaseTxtRecord:
@@ -561,24 +381,18 @@ def match_file_to_prompt(original_filename: str, prompt_list: List[XMLPrompt]) -
         if prompt.original_filename.lower() == filename_lower:
             return prompt
     return None
-
+import httpx
 @dataclass
 class MainLoader:
-    excel_path: Path = Path("gc_CS111-30010973-2025FA_svdownload_2025-10-25-22-57-45.csv")
-    files_path: Path = Path("./gradebook_CS111-30010973-2025FA_PA20_620Submission_2025-10-25-23-40-43")
+    files_path: Path = Path("")
     prompt_path: Path = Path("./prompt.md")
     output_path: Path = Path("./feedback_output")
-    grade_list: Dict = field(default_factory=dict)
     parser: PromptXMLParser = field(default=None)
     client: OpenAI = field(default=None)
     prompt_list: List[XMLPrompt] = field(default_factory=list)
 
+    custom_http_client = httpx.Client(trust_env=False)
     def __post_init__(self):
-        self.grade_list = GradeList.load_from_csv_as_dict(
-            filepath=str(self.excel_path),
-            key_field="Username",
-            encoding='utf-8-sig'
-        )
         prompt_string = ""
         try:
             with open(self.prompt_path, 'r', encoding='utf-8') as f:
@@ -590,11 +404,24 @@ class MainLoader:
         self.parser = PromptXMLParser(prompt_string)
         self.client = OpenAI(
             # 若没有配置环境变量，请用百炼API Key将下行替换为：api_key="sk-xxx",
-            api_key="sk-9b155a5f0d8849bdb1957500a34f644e",
+            api_key=API_KEY,
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            http_client=self.custom_http_client
         )
         # 创建输出目录
         self.output_path.mkdir(parents=True, exist_ok=True)
+
+        # 更新 files_path 自动找到日期最新的files_path
+        if self.files_path == Path("") or not self.files_path.exists():
+            
+            file_names=[(f,f[-20:]) for f in os.listdir('.') if f.startswith('gradebook_CS111') and os.path.isdir(f)]
+            # print(f"找到所有测试目录{file_names!r}")
+            if(len(file_names)==0):
+                # print("警告：当前目录下未找到任何 gradebook_CS111 开头的目录，请手动指定 files_path。")
+                raise FileNotFoundError("未找到任何 gradebook_CS111 开头的目录")
+            sorted_file_names=sorted(file_names,key=lambda x:x[1],reverse=True)
+            self.files_path=Path(sorted_file_names[0][0]) if len(sorted_file_names)>0 else Path("")
+            print(f"自动选择最新的提交目录: {self.files_path}")
 
     def set_prompt_list(self, prompts: List[XMLPrompt]):
         """设置 XMLPrompt 列表"""
@@ -603,10 +430,10 @@ class MainLoader:
     def get_all_students(self) -> List[Student]:
         """
         获取所有学生及其提交记录。
-        
         :return: Student 对象列表
         """
         students = []
+        print(f"正在从目录加载学生记录: {self.files_path}")
         txt_files = list(self.files_path.glob("*.txt"))
         for txt_file in txt_files:
             try:
@@ -628,27 +455,33 @@ class MainLoader:
         :param system_prompt: 系统提示词（可选）
         :return: (反馈文本, 建议分数) 的元组
         """
+
         if system_prompt is None:
             system_prompt = """你是一名 C 语言编程课程的资深助教，你的职责是评阅学生代码。
-请对提交的代码进行以下方面的深入分析：
-1. 总体评价：代码是否完成了题目要求？
-2. 正确性分析：代码的逻辑是否正确？是否有 bug？
-3. 代码质量：代码风格、效率、注释情况如何？
-4. 改进建议：哪些地方可以改进？
-5. 建议分数：根据完成度、正确性、代码质量，给出建议分数（满分100分）。
+            请对提交的代码进行以下方面的深入分析：
+            
+            1. 总体评价：代码是否完成了题目要求？
+            2. 正确性分析：代码的逻辑是否正确？是否有 bug？是否考虑了边界情况？
+            3. 代码质量：代码风格、效率、注释情况、可读性如何？
+            4. 改进建议：[必须] 哪些地方可以改进？请尽量提供具体的代码修正示例。
+            5. AI 使用分析：[必须]
+               - 首先，请检查代码注释或学生提交的说明，看他/她是否*明确声明*使用了AI？
+               - 如果没有声明，请评估这份代码由AI生成的可能性（高/中/低），并简要说明你的判断依据。
+               - [注意：按要求报告即可，学生承认使用AI不扣分。]
+            6. 建议分数：根据完成度、正确性、代码质量，给出建议分数（满分100分）。
 
-请用中文回答，并以"建议分数：XX/100"的格式明确指出建议分数。"""
+            请用中文回答，并以"建议分数：XX/100"的格式明确指出建议分数。"""
         
         user_message = f"""题目描述：
-{problem_description}
+        {problem_description}
 
-学生代码：
-```c
-{student_code}
-```
+        学生代码：
+        ```c
+        {student_code}
+        ```
 
-请对这份代码提交进行详细评阅。"""
-        
+        请对这份代码提交进行详细评阅。"""
+    
         try:
             response = self.client.chat.completions.create(
                 model="qwen3-max",
@@ -657,7 +490,7 @@ class MainLoader:
                     {"role": "user", "content": user_message},
                 ],
                 temperature=0.7,
-                max_tokens=2000,
+                max_tokens=20000,
                 stream=False  # 显式禁用流式，确保返回完整响应
             )
             
@@ -718,28 +551,28 @@ class MainLoader:
         """
         md_content = f"""# 代码反馈报告
 
-## 学生信息
-- **学号**: {student.student_id}
-- **姓名**: {student.name}
-- **文件**: {assignment.orig_name}
-- **建议分数**: {score}
-- **生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+        ## 学生信息
+        - **学号**: {student.student_id}
+        - **姓名**: {student.name}
+        - **文件**: {assignment.orig_name}
+        - **建议分数**: {score}
+        - **生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-## 题目描述
-{prompt.problem}
+        ## 题目描述
+        {prompt.problem}
 
-## 学生代码
-```c
-{assignment.data}
-```
+        ## 学生代码
+        ```c
+        {assignment.data}
+        ```
 
-## 评阅意见
+        ## 评阅意见
 
-{feedback}
+        {feedback}
 
----
-*本反馈由 Qwen AI 自动生成。*
-"""
+        ---
+        *本反馈由 Qwen AI 自动生成。*
+        """
         return md_content
 
     def process_all_submissions(self, limit: int = None):
@@ -756,8 +589,8 @@ class MainLoader:
             print(f"限制处理到前 {limit} 个学生。")
         
         for student_idx, student in enumerate(students):
-            if(student_idx<26):
-                continue
+            if(student_idx==2):
+                break
             print(f"\n处理学生 [{student_idx+1}/{len(students)}]: {student.name} ({student.student_id})")
             
             for homework_idx, assignment in enumerate(student.homeworks):
@@ -820,7 +653,7 @@ if __name__ == "__main__":
         float from an integer division. Submit the program as pa6p1.
         """,
         code="",
-        original_filename="pa6p1.c"
+        original_filename="pa3p1.c"
         ))
     XMLPromptList.append(XMLPrompt(
         problem="""
@@ -850,7 +683,7 @@ if __name__ == "__main__":
         and name it as pa6p2.c.
         """,
         code="",
-        original_filename="pa6p2.c"
+        original_filename="pa3p2.c"
         ))
     
     main_loader = MainLoader()
