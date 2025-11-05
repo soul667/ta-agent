@@ -103,4 +103,65 @@ cd ta_agent_back && uv run -m uvicorn main1:app --reload --host 0.0.0.0 --port 8
 cd ta-agent && pnpm run dev
 ```
 
-# TODO
+# 更多
+## 修改系统提示词
+get_feedback_from_qwen函数中
+```python
+        if system_prompt is None:
+            system_prompt = """你是一名 C 语言编程课程的资深助教，你的职责是评阅学生代码。
+            请对提交的代码进行以下方面的深入分析：
+            
+            1. 总体评价：代码是否完成了题目要求？
+            2. 正确性分析：代码的逻辑是否正确？是否有 bug？是否考虑了边界情况？
+            3. 代码质量：代码风格、效率、注释情况、可读性如何？
+            4. 改进建议：[必须] 哪些地方可以改进？请尽量提供具体的代码修正示例。
+            5. AI 使用分析：[必须]
+               - 首先，请检查代码注释或学生提交的说明，看他/她是否*明确声明*使用了AI？
+               - 如果没有声明，请评估这份代码由AI生成的可能性（高/中/低），并简要说明你的判断依据。
+               - [注意：按要求报告即可，学生承认使用AI不扣分。]
+            6. 建议分数：根据完成度、正确性、代码质量，给出建议分数（满分100分）。
+
+            请用中文回答，并以"建议分数：XX/100"的格式明确指出建议分数。"""
+```
+
+## 修改生成的反馈报告模板
+```python
+def generate_feedback_markdown(self, student: Student, assignment: AssignmentBase, 
+                                    prompt: XMLPrompt, feedback: str, score: str) -> str:
+        """
+        生成反馈 Markdown 文本。
+        
+        :param student: Student 对象
+        :param assignment: AssignmentBase 对象
+        :param prompt: XMLPrompt 对象
+        :param feedback: AI 反馈文本
+        :param score: 建议分数
+        :return: Markdown 格式的反馈
+        """
+        md_content = f"""# 代码反馈报告
+
+        ## 学生信息
+        - **学号**: {student.student_id}
+        - **姓名**: {student.name}
+        - **文件**: {assignment.orig_name}
+        - **建议分数**: {score}
+        - **生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+        ## 题目描述
+        {prompt.problem}
+
+        ## 学生代码
+        ```c
+        {assignment.data}
+        ```
+
+        ## 评阅意见
+
+        {feedback}
+
+        ---
+        *本反馈由 Qwen AI 自动生成。*
+        """
+        return md_content
+
+```
